@@ -7,7 +7,7 @@ import {
   Sparkles,
   Users,
 } from "lucide-react";
-
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 
@@ -35,21 +35,43 @@ export default function Home() {
             </div>
           </div>
 
-          <nav className="space-y-1">
-            {nav.map(([label, Icon], i) => (
-              <div
-                key={label as string}
-                className={`flex items-center gap-3 rounded-2xl px-4 py-3 text-sm ${
-                  i === 0
-                    ? "bg-white text-slate-950"
-                    : "text-slate-300 hover:bg-white/10"
-                }`}
-              >
-                <Icon size={18} />
-                {label as string}
-              </div>
-            ))}
-          </nav>
+          <div className="space-y-2 mt-8">
+  <Link href="/dashboard">
+    <button className="w-full rounded-2xl bg-white text-black p-4 text-left">
+      Dashboard
+    </button>
+  </Link>
+
+  <Link href="/timetable">
+    <button className="w-full rounded-2xl p-4 text-left hover:bg-white/10">
+      Timetable
+    </button>
+  </Link>
+
+  <Link href="/teachers">
+    <button className="w-full rounded-2xl p-4 text-left hover:bg-white/10">
+      Teachers
+    </button>
+  </Link>
+
+  <Link href="/classes">
+    <button className="w-full rounded-2xl p-4 text-left hover:bg-white/10">
+      Classes
+    </button>
+  </Link>
+
+  <Link href="/ai-generator">
+    <button className="w-full rounded-2xl p-4 text-left hover:bg-white/10">
+      AI Generator
+    </button>
+  </Link>
+
+  <Link href="/settings">
+    <button className="w-full rounded-2xl p-4 text-left hover:bg-white/10">
+      Settings
+    </button>
+  </Link>
+</div>
         </aside>
 
         <section className="flex-1 p-8">
