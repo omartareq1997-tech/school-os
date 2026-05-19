@@ -5,6 +5,11 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { Bot, LogOut } from "lucide-react"
 import { supabase } from "@/lib/supabase"
+import {
+  fetchCurrentProfile,
+  fetchSchool,
+  type UserRole,
+} from "@/lib/profile"
 import { NAV_ITEMS, SETUP_STEPS } from "@/lib/nav"
 
 type AppShellProps = {
@@ -12,57 +17,121 @@ type AppShellProps = {
   children: React.ReactNode
 }
 
+// ─── Role badge styles ────────────────────────────────────────────────────────
+
+const ROLE_BADGE: Record<UserRole, string> = {
+  owner:   "bg-indigo-50 text-indigo-700",
+  admin:   "bg-amber-50 text-amber-700",
+  teacher: "bg-slate-100 text-slate-600",
+}
+
 // ─── User menu (bottom of sidebar) ───────────────────────────────────────────
 
 function UserMenu() {
   const [email, setEmail] = useState<string | null>(null)
+  const [schoolName, setSchoolName] = useState<string | null>(null)
+  const [role, setRole] = useState<UserRole | null>(null)
 
   useEffect(() => {
-    // Async initial read — setState lives in .then() to satisfy the lint rule.
+    let alive = true
+
+    // ── Initial load ──────────────────────────────────────────────────────────
+    // All setState lives inside async .then() callbacks (never synchronously
+    // in the effect body) to satisfy the react-hooks/set-state-in-effect rule.
+
     void supabase.auth.getSession().then(({ data: { session } }) => {
-      setEmail(session?.user?.email ?? null)
+      if (alive) setEmail(session?.user?.email ?? null)
     })
 
-    // Reactively track sign-in / sign-out events.
+    void fetchCurrentProfile().then((profile) => {
+      if (!alive || !profile) return
+      setRole(profile.role)
+      if (!profile.schoolId) return
+      void fetchSchool(profile.schoolId).then((school) => {
+        if (alive) setSchoolName(school?.name ?? null)
+      })
+    })
+
+    // ── Auth state subscription ───────────────────────────────────────────────
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       setEmail(session?.user?.email ?? null)
+
+      if (!session?.user) {
+        setRole(null)
+        setSchoolName(null)
+        return
+      }
+
+      void fetchCurrentProfile().then((profile) => {
+        if (!alive || !profile) return
+        setRole(profile.role)
+        if (!profile.schoolId) {
+          setSchoolName(null)
+          return
+        }
+        void fetchSchool(profile.schoolId).then((school) => {
+          if (alive) setSchoolName(school?.name ?? null)
+        })
+      })
     })
 
-    return () => subscription.unsubscribe()
+    return () => {
+      alive = false
+      subscription.unsubscribe()
+    }
   }, [])
 
   function handleSignOut() {
     void supabase.auth.signOut().then(() => {
-      // Hard redirect so middleware re-evaluates and clears all client state.
       window.location.href = "/auth/login"
     })
   }
 
+  // Don't render until we at least have the email.
   if (!email) return null
 
-  // Show the first two characters of the email as initials.
   const initials = email.slice(0, 2).toUpperCase()
+  const showSchoolRow = schoolName !== null || role !== null
 
   return (
     <div className="border-t border-slate-100 p-4">
-      <div className="flex items-center gap-3">
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-100 text-xs font-semibold text-indigo-700">
-          {initials}
+      <div className="space-y-2.5">
+        {/* School + role row — only once profile data has loaded */}
+        {showSchoolRow && (
+          <div className="flex items-center justify-between gap-2">
+            <p className="min-w-0 flex-1 truncate text-xs text-slate-500">
+              {schoolName ?? "—"}
+            </p>
+            {role && (
+              <span
+                className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium capitalize ${ROLE_BADGE[role]}`}
+              >
+                {role}
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* User row */}
+        <div className="flex items-center gap-2">
+          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-indigo-100 text-xs font-semibold text-indigo-700">
+            {initials}
+          </div>
+          <p className="min-w-0 flex-1 truncate text-xs font-medium text-slate-700">
+            {email}
+          </p>
+          <button
+            type="button"
+            onClick={handleSignOut}
+            aria-label="Sign out"
+            title="Sign out"
+            className="shrink-0 rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+          >
+            <LogOut size={14} />
+          </button>
         </div>
-        <p className="min-w-0 flex-1 truncate text-xs font-medium text-slate-700">
-          {email}
-        </p>
-        <button
-          type="button"
-          onClick={handleSignOut}
-          aria-label="Sign out"
-          title="Sign out"
-          className="shrink-0 rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
-        >
-          <LogOut size={14} />
-        </button>
       </div>
     </div>
   )
