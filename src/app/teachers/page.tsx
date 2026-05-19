@@ -1,135 +1,91 @@
 "use client"
 
-import Link from "next/link"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { supabase } from "@/lib/supabase"
 import {
-  Bot,
-  CalendarDays,
-  Check,
-  GraduationCap,
-  LayoutDashboard,
-  Pencil,
-  Plus,
-  Search,
-  Settings,
-  Sparkles,
-  Trash2,
-  Users,
-  Zap,
-} from "lucide-react"
+  fetchSubjects,
+  fetchTeachers,
+  syncTeacherSubjects,
+  teacherToDb,
+  type Subject,
+  type Teacher,
+} from "@/lib/database"
+import { SubjectPicker, SubjectTags } from "@/components/subject-tags"
+import { AppShell } from "@/components/app-shell"
+import { notify } from "@/lib/toast"
+import { Spinner, SkeletonTableRows } from "@/components/skeletons"
+import { Check, Pencil, Plus, Search, Trash2, Zap } from "lucide-react"
+import { cellInputClassName, SETUP_STEPS } from "@/lib/nav"
 
-type Teacher = {
-  id: string
+const CURRENT_STEP = 4
+
+type TeacherDraft = {
   name: string
-  subject: string
   minWorkingDays: number
   maxWorkingDays: number
   maxHoursPerDay: number
   unavailability: string
   preferences: string
+  subjectIds: string[]
 }
 
-type TeacherRow = Record<string, unknown>
-
-function mapRowToTeacher(row: TeacherRow): Teacher {
-  return {
-    id: String(row.id ?? ""),
-    name: String(row.name ?? "New Teacher"),
-    subject: String(row.subject ?? "—"),
-    minWorkingDays: Number(
-      row.min_working_days ?? row.minWorkingDays ?? 0
-    ),
-    maxWorkingDays: Number(
-      row.max_working_days ?? row.maxWorkingDays ?? 0
-    ),
-    maxHoursPerDay: Number(
-      row.max_hours_per_day ?? row.maxHoursPerDay ?? 0
-    ),
-    unavailability: String(row.unavailability ?? "—"),
-    preferences: String(row.preferences ?? "—"),
-  }
-}
-
-function buildInsertPayload(quick: boolean, count: number) {
-  return {
-    name: quick ? `Teacher ${count + 1}` : "New Teacher",
-    subject: quick ? "Unassigned" : "—",
-    min_working_days: 3,
-    max_working_days: 5,
-    max_hours_per_day: 6,
-    unavailability: "—",
-    preferences: "—",
-  }
-}
-
-function buildMinimalInsertPayload(quick: boolean, count: number) {
-  return {
-    name: quick ? `Teacher ${count + 1}` : "New Teacher",
-    subject: quick ? "Unassigned" : "—",
-  }
-}
-
-function buildUpdatePayload(teacher: Teacher) {
+function teacherToDraft(teacher: Teacher): TeacherDraft {
   return {
     name: teacher.name,
-    subject: teacher.subject,
-    min_working_days: teacher.minWorkingDays,
-    max_working_days: teacher.maxWorkingDays,
-    max_hours_per_day: teacher.maxHoursPerDay,
+    minWorkingDays: teacher.minWorkingDays,
+    maxWorkingDays: teacher.maxWorkingDays,
+    maxHoursPerDay: teacher.maxHoursPerDay,
     unavailability: teacher.unavailability,
     preferences: teacher.preferences,
+    subjectIds: teacher.subjects.map((s) => s.id),
   }
 }
 
-const cellInputClassName =
-  "w-full min-w-0 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-sm text-slate-900 outline-none transition focus:border-indigo-300 focus:bg-white focus:ring-2 focus:ring-indigo-100"
-
-const SETUP_STEPS = [
-  "School config",
-  "Classes",
-  "Divisions",
-  "Subjects",
-  "Teachers",
-  "Lessons",
-  "Timetable constraints",
-] as const
-
-const CURRENT_STEP = 4
-
-const NAV_ITEMS = [
-  { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
-  { label: "Timetable", href: "/timetable", icon: CalendarDays },
-  { label: "Teachers", href: "/teachers", icon: Users },
-  { label: "Classes", href: "/classes", icon: GraduationCap },
-  { label: "AI Generator", href: "/ai-generator", icon: Sparkles },
-  { label: "Settings", href: "/settings", icon: Settings },
-] as const
+function defaultDraft(quick: boolean, count: number): TeacherDraft {
+  return {
+    name: quick ? `Teacher ${count + 1}` : "New Teacher",
+    minWorkingDays: 3,
+    maxWorkingDays: 5,
+    maxHoursPerDay: 6,
+    unavailability: "—",
+    preferences: "—",
+    subjectIds: [],
+  }
+}
 
 export default function TeachersPage() {
   const [teachers, setTeachers] = useState<Teacher[]>([])
+  const [allSubjects, setAllSubjects] = useState<Subject[]>([])
   const [search, setSearch] = useState("")
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [editingId, setEditingId] = useState<string | null>(null)
-  const [editDraft, setEditDraft] = useState<Teacher | null>(null)
+  const [editDraft, setEditDraft] = useState<TeacherDraft | null>(null)
+  const [isLoading, setIsLoading] = useState(true)
+  const [adding, setAdding] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
 
+  // Post-mutation reload — called from event handlers, never from effects.
   const loadTeachers = useCallback(async () => {
-    const { data, error } = await supabase
-      .from("teachers")
-      .select("*")
-      .order("name")
-
-    if (error) {
-      console.error("Failed to load teachers:", error.message, error)
-      return
-    }
-
-    setTeachers((data ?? []).map((row) => mapRowToTeacher(row)))
+    setTeachers(await fetchTeachers())
   }, [])
 
+  // Initial load: all setState lives inside the async .then() to satisfy the
+  // react-hooks/set-state-in-effect lint rule.
   useEffect(() => {
-    void loadTeachers()
-  }, [loadTeachers])
+    let alive = true
+    void Promise.all([fetchTeachers(), fetchSubjects()]).then(
+      ([teachersData, subjectsData]) => {
+        if (!alive) return
+        setTeachers(teachersData)
+        setAllSubjects(subjectsData)
+        setIsLoading(false)
+      }
+    )
+    return () => {
+      alive = false
+    }
+  }, [])
 
   const filteredTeachers = useMemo(() => {
     const query = search.trim().toLowerCase()
@@ -137,7 +93,7 @@ export default function TeachersPage() {
     return teachers.filter(
       (t) =>
         t.name.toLowerCase().includes(query) ||
-        t.subject.toLowerCase().includes(query)
+        t.subjects.some((s) => s.name.toLowerCase().includes(query))
     )
   }, [teachers, search])
 
@@ -172,51 +128,45 @@ export default function TeachersPage() {
 
   const addTeacher = useCallback(
     async (quick: boolean) => {
-      const count = teachers.length
-      let result = await supabase
+      setAdding(true)
+      const draft = defaultDraft(quick, teachers.length)
+      const { data, error } = await supabase
         .from("teachers")
-        .insert(buildInsertPayload(quick, count))
-        .select("*")
+        .insert(teacherToDb(draft))
+        .select("id")
+        .single()
 
-      if (
-        result.error &&
-        (result.error.code === "PGRST204" ||
-          result.error.message.toLowerCase().includes("column"))
-      ) {
-        result = await supabase
-          .from("teachers")
-          .insert(buildMinimalInsertPayload(quick, count))
-          .select("*")
-      }
-
-      if (result.error) {
-        console.error(
-          "Failed to add teacher:",
-          result.error.message,
-          result.error
-        )
+      if (error) {
+        notify.error(error.message)
+        setAdding(false)
         return
       }
 
-      if (result.data?.length) {
-        setTeachers((prev) => {
-          const existing = new Set(prev.map((t) => t.id))
-          const added = result.data!.map((row) => mapRowToTeacher(row))
-          return [...prev, ...added.filter((t) => !existing.has(t.id))]
-        })
+      if (data?.id) {
+        const ok = await syncTeacherSubjects(data.id, draft.subjectIds)
+        if (!ok) {
+          notify.error("Teacher added but subject assignments failed")
+          await loadTeachers()
+          setAdding(false)
+          return
+        }
       }
 
+      notify.success("Teacher added")
       await loadTeachers()
+      setAdding(false)
     },
     [teachers.length, loadTeachers]
   )
 
   const deleteTeacher = useCallback(
     async (id: string) => {
+      setDeletingId(id)
       const { error } = await supabase.from("teachers").delete().eq("id", id)
 
       if (error) {
-        console.error("Failed to delete teacher:", error.message, error)
+        notify.error(error.message)
+        setDeletingId(null)
         return
       }
 
@@ -232,14 +182,16 @@ export default function TeachersPage() {
         return next
       })
 
+      notify.success("Teacher deleted")
       await loadTeachers()
+      setDeletingId(null)
     },
     [editingId, loadTeachers]
   )
 
   const startEdit = useCallback((teacher: Teacher) => {
     setEditingId(teacher.id)
-    setEditDraft({ ...teacher })
+    setEditDraft(teacherToDraft(teacher))
   }, [])
 
   const cancelEdit = useCallback(() => {
@@ -248,7 +200,7 @@ export default function TeachersPage() {
   }, [])
 
   const updateDraft = useCallback(
-    (field: keyof Omit<Teacher, "id">, value: string | number) => {
+    (field: keyof Omit<TeacherDraft, "subjectIds">, value: string | number) => {
       setEditDraft((prev) => (prev ? { ...prev, [field]: value } : null))
     },
     []
@@ -256,120 +208,35 @@ export default function TeachersPage() {
 
   const saveEdit = useCallback(async () => {
     if (!editingId || !editDraft) return
+    setSaving(true)
 
-    let result = await supabase
+    const { error } = await supabase
       .from("teachers")
-      .update(buildUpdatePayload(editDraft))
+      .update(teacherToDb(editDraft))
       .eq("id", editingId)
-      .select("*")
-      .single()
 
-    if (
-      result.error &&
-      (result.error.code === "PGRST204" ||
-        result.error.message.toLowerCase().includes("column"))
-    ) {
-      result = await supabase
-        .from("teachers")
-        .update({
-          name: editDraft.name,
-          subject: editDraft.subject,
-        })
-        .eq("id", editingId)
-        .select("*")
-        .single()
-    }
-
-    if (result.error) {
-      console.error("Failed to update teacher:", result.error.message, result.error)
+    if (error) {
+      notify.error(error.message)
+      setSaving(false)
       return
     }
 
-    if (result.data) {
-      const updated = mapRowToTeacher(result.data)
-      setTeachers((prev) =>
-        prev.map((t) => (t.id === editingId ? updated : t))
-      )
+    const ok = await syncTeacherSubjects(editingId, editDraft.subjectIds)
+    if (!ok) {
+      notify.error("Saved but subject assignments failed")
+    } else {
+      notify.success("Teacher saved")
     }
-
+    setSaving(false)
     setEditingId(null)
     setEditDraft(null)
     await loadTeachers()
   }, [editingId, editDraft, loadTeachers])
 
+  const busy = isLoading || adding
+
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
-      <div className="flex min-h-screen">
-        {/* Sidebar */}
-        <aside className="hidden w-64 shrink-0 flex-col border-r border-slate-200 bg-white lg:flex">
-          <div className="flex items-center gap-3 border-b border-slate-100 px-5 py-5">
-            <div className="grid h-10 w-10 place-items-center rounded-xl bg-indigo-600 text-white shadow-sm shadow-indigo-200">
-              <Bot size={20} />
-            </div>
-            <div>
-              <p className="text-sm font-semibold text-slate-900">School OS</p>
-              <p className="text-xs text-slate-500">Timetable setup</p>
-            </div>
-          </div>
-
-          <nav className="flex-1 space-y-1 p-3">
-            {NAV_ITEMS.map(({ label, href, icon: Icon }) => {
-              const active = href === "/teachers"
-              return (
-              <Link
-                key={href}
-                href={href}
-                className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${
-                  active
-                    ? "bg-indigo-50 text-indigo-700"
-                    : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-                }`}
-              >
-                <Icon
-                  size={18}
-                  className={active ? "text-indigo-600" : "text-slate-400"}
-                />
-                {label}
-              </Link>
-            )})}
-          </nav>
-
-          <div className="border-t border-slate-100 p-4">
-            <p className="text-xs font-medium text-slate-500">Setup progress</p>
-            <p className="mt-1 text-sm font-semibold text-slate-800">
-              Step {CURRENT_STEP + 1} of {SETUP_STEPS.length}
-            </p>
-            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-100">
-              <div
-                className="h-full rounded-full bg-indigo-600 transition-all"
-                style={{
-                  width: `${((CURRENT_STEP + 1) / SETUP_STEPS.length) * 100}%`,
-                }}
-              />
-            </div>
-          </div>
-        </aside>
-
-        {/* Main */}
-        <div className="flex min-w-0 flex-1 flex-col">
-          {/* Mobile top bar */}
-          <header className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3 lg:hidden">
-            <div className="flex items-center gap-2">
-              <div className="grid h-8 w-8 place-items-center rounded-lg bg-indigo-600 text-white">
-                <Bot size={16} />
-              </div>
-              <span className="text-sm font-semibold">School OS</span>
-            </div>
-            <Link
-              href="/dashboard"
-              className="text-xs font-medium text-indigo-600"
-            >
-              Menu
-            </Link>
-          </header>
-
-          <main className="flex-1 overflow-auto">
-            <div className="mx-auto max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+    <AppShell currentStep={CURRENT_STEP}>
               {/* Page header */}
               <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                 <div>
@@ -388,7 +255,8 @@ export default function TeachersPage() {
                   <button
                     type="button"
                     onClick={() => void addTeacher(true)}
-                    className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50"
+                    disabled={busy}
+                    className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 disabled:opacity-60"
                   >
                     <Zap size={16} className="text-amber-500" />
                     Quick add
@@ -396,10 +264,11 @@ export default function TeachersPage() {
                   <button
                     type="button"
                     onClick={() => void addTeacher(false)}
-                    className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm shadow-indigo-200 transition hover:bg-indigo-700"
+                    disabled={busy}
+                    className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm shadow-indigo-200 transition hover:bg-indigo-700 disabled:opacity-60"
                   >
-                    <Plus size={16} />
-                    New teacher
+                    {adding ? <Spinner /> : <Plus size={16} />}
+                    {adding ? "Adding…" : "New teacher"}
                   </button>
                 </div>
               </div>
@@ -488,14 +357,22 @@ export default function TeachersPage() {
                     />
                   </div>
                   <p className="text-sm text-slate-500">
-                    <span className="font-medium text-slate-700">
-                      {filteredTeachers.length}
-                    </span>{" "}
-                    {filteredTeachers.length === 1 ? "teacher" : "teachers"}
-                    {selectedIds.size > 0 && (
-                      <span className="ml-2 text-indigo-600">
-                        · {selectedIds.size} selected
+                    {isLoading ? (
+                      <span className="inline-flex items-center gap-1.5 text-slate-400">
+                        <Spinner /> Loading…
                       </span>
+                    ) : (
+                      <>
+                        <span className="font-medium text-slate-700">
+                          {filteredTeachers.length}
+                        </span>{" "}
+                        {filteredTeachers.length === 1 ? "teacher" : "teachers"}
+                        {selectedIds.size > 0 && (
+                          <span className="ml-2 text-indigo-600">
+                            · {selectedIds.size} selected
+                          </span>
+                        )}
+                      </>
                     )}
                   </p>
                 </div>
@@ -517,7 +394,7 @@ export default function TeachersPage() {
                           Name
                         </th>
                         <th className="px-4 py-3 font-medium text-slate-600">
-                          Subject
+                          Subject skills
                         </th>
                         <th className="px-4 py-3 font-medium text-slate-600">
                           Min working days
@@ -540,7 +417,9 @@ export default function TeachersPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredTeachers.length === 0 ? (
+                      {isLoading ? (
+                        <SkeletonTableRows rows={5} cols={9} />
+                      ) : filteredTeachers.length === 0 ? (
                         <tr>
                           <td
                             colSpan={9}
@@ -554,13 +433,14 @@ export default function TeachersPage() {
                           const selected = selectedIds.has(teacher.id)
                           const isEditing = editingId === teacher.id
                           const draft = isEditing ? editDraft : null
+                          const isDeleting = deletingId === teacher.id
 
                           return (
                             <tr
                               key={teacher.id}
                               className={`border-b border-slate-50 transition-colors last:border-0 hover:bg-slate-50/60 ${
                                 selected || isEditing ? "bg-indigo-50/40" : ""
-                              }`}
+                              } ${isDeleting ? "opacity-50" : ""}`}
                             >
                               <td className="px-4 py-3">
                                 <input
@@ -608,18 +488,17 @@ export default function TeachersPage() {
                               </td>
                               <td className="px-4 py-3">
                                 {isEditing && draft ? (
-                                  <input
-                                    type="text"
-                                    value={draft.subject}
-                                    onChange={(e) =>
-                                      updateDraft("subject", e.target.value)
+                                  <SubjectPicker
+                                    allSubjects={allSubjects}
+                                    selectedIds={draft.subjectIds}
+                                    onChange={(subjectIds) =>
+                                      setEditDraft((prev) =>
+                                        prev ? { ...prev, subjectIds } : null
+                                      )
                                     }
-                                    className={cellInputClassName}
                                   />
                                 ) : (
-                                  <span className="inline-flex rounded-md bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700">
-                                    {teacher.subject}
-                                  </span>
+                                  <SubjectTags subjects={teacher.subjects} />
                                 )}
                               </td>
                               <td className="px-4 py-3">
@@ -724,14 +603,17 @@ export default function TeachersPage() {
                                       <button
                                         type="button"
                                         onClick={() => void saveEdit()}
-                                        className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-indigo-600 transition hover:bg-indigo-50"
+                                        disabled={saving}
+                                        className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-indigo-600 transition hover:bg-indigo-50 disabled:opacity-60"
                                       >
-                                        Save
+                                        {saving && <Spinner />}
+                                        {saving ? "Saving…" : "Save"}
                                       </button>
                                       <button
                                         type="button"
                                         onClick={cancelEdit}
-                                        className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-100"
+                                        disabled={saving}
+                                        className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-100 disabled:opacity-60"
                                       >
                                         Cancel
                                       </button>
@@ -742,7 +624,7 @@ export default function TeachersPage() {
                                         type="button"
                                         aria-label={`Edit ${teacher.name}`}
                                         onClick={() => startEdit(teacher)}
-                                        disabled={editingId !== null}
+                                        disabled={editingId !== null || !!deletingId}
                                         className="rounded-lg p-2 text-slate-400 transition hover:bg-slate-100 hover:text-indigo-600 disabled:opacity-40"
                                       >
                                         <Pencil size={16} />
@@ -753,10 +635,14 @@ export default function TeachersPage() {
                                         onClick={() =>
                                           void deleteTeacher(teacher.id)
                                         }
-                                        disabled={editingId !== null}
+                                        disabled={editingId !== null || !!deletingId}
                                         className="rounded-lg p-2 text-slate-400 transition hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
                                       >
-                                        <Trash2 size={16} />
+                                        {isDeleting ? (
+                                          <Spinner />
+                                        ) : (
+                                          <Trash2 size={16} />
+                                        )}
                                       </button>
                                     </>
                                   )}
@@ -772,23 +658,19 @@ export default function TeachersPage() {
 
                 <div className="flex flex-col items-center justify-between gap-3 border-t border-slate-100 bg-slate-50/50 px-4 py-4 sm:flex-row sm:px-5">
                   <p className="text-xs text-slate-500">
-                    Changes are saved locally until backend is connected.
+                    Subject skills link teachers to subjects via Supabase relations.
                   </p>
                   <button
                     type="button"
                     onClick={() => void addTeacher(false)}
-                    className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-indigo-300 hover:text-indigo-700 sm:w-auto"
+                    disabled={busy}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-indigo-300 hover:text-indigo-700 disabled:opacity-60 sm:w-auto"
                   >
-                    <Plus size={16} />
-                    Add teacher
+                    {adding ? <Spinner /> : <Plus size={16} />}
+                    {adding ? "Adding…" : "Add teacher"}
                   </button>
                 </div>
               </section>
-            </div>
-          </main>
-        </div>
-      </div>
-    </div>
+    </AppShell>
   )
 }
-
