@@ -1,14 +1,74 @@
 "use client"
 
+import { useEffect, useState } from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Bot } from "lucide-react"
+import { Bot, LogOut } from "lucide-react"
+import { supabase } from "@/lib/supabase"
 import { NAV_ITEMS, SETUP_STEPS } from "@/lib/nav"
 
 type AppShellProps = {
   currentStep?: number
   children: React.ReactNode
 }
+
+// ─── User menu (bottom of sidebar) ───────────────────────────────────────────
+
+function UserMenu() {
+  const [email, setEmail] = useState<string | null>(null)
+
+  useEffect(() => {
+    // Async initial read — setState lives in .then() to satisfy the lint rule.
+    void supabase.auth.getSession().then(({ data: { session } }) => {
+      setEmail(session?.user?.email ?? null)
+    })
+
+    // Reactively track sign-in / sign-out events.
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setEmail(session?.user?.email ?? null)
+    })
+
+    return () => subscription.unsubscribe()
+  }, [])
+
+  function handleSignOut() {
+    void supabase.auth.signOut().then(() => {
+      // Hard redirect so middleware re-evaluates and clears all client state.
+      window.location.href = "/auth/login"
+    })
+  }
+
+  if (!email) return null
+
+  // Show the first two characters of the email as initials.
+  const initials = email.slice(0, 2).toUpperCase()
+
+  return (
+    <div className="border-t border-slate-100 p-4">
+      <div className="flex items-center gap-3">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-100 text-xs font-semibold text-indigo-700">
+          {initials}
+        </div>
+        <p className="min-w-0 flex-1 truncate text-xs font-medium text-slate-700">
+          {email}
+        </p>
+        <button
+          type="button"
+          onClick={handleSignOut}
+          aria-label="Sign out"
+          title="Sign out"
+          className="shrink-0 rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+        >
+          <LogOut size={14} />
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ─── Shell ────────────────────────────────────────────────────────────────────
 
 export function AppShell({ currentStep, children }: AppShellProps) {
   const pathname = usePathname()
@@ -66,6 +126,8 @@ export function AppShell({ currentStep, children }: AppShellProps) {
               </div>
             </div>
           )}
+
+          <UserMenu />
         </aside>
 
         <div className="flex min-w-0 flex-1 flex-col">
