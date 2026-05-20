@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import { supabase } from "@/lib/supabase"
 import type { Subject } from "@/lib/database"
 import { fetchSubjects } from "@/lib/database"
+import { fetchCurrentProfile } from "@/lib/profile"
 import { AppShell } from "@/components/app-shell"
 import { notify } from "@/lib/toast"
 import { Spinner, SkeletonTableRows } from "@/components/skeletons"
@@ -13,6 +14,7 @@ import { cellInputClassName, SETUP_STEPS } from "@/lib/nav"
 const CURRENT_STEP = 3
 
 export default function SubjectsPage() {
+  const [schoolId, setSchoolId] = useState<string | null>(null)
   const [subjects, setSubjects] = useState<Subject[]>([])
   const [search, setSearch] = useState("")
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -25,16 +27,23 @@ export default function SubjectsPage() {
 
   // Post-mutation reload — called from event handlers, never from effects.
   const loadSubjects = useCallback(async () => {
-    setSubjects(await fetchSubjects())
-  }, [])
+    if (!schoolId) return
+    setSubjects(await fetchSubjects(schoolId))
+  }, [schoolId])
 
-  // Initial load via .then() to avoid synchronous setState in effect body.
+  // Initial load: fetch profile first to get schoolId, then fetch data.
+  // All setState lives inside .then() callbacks (react-hooks/set-state-in-effect).
   useEffect(() => {
     let alive = true
-    void fetchSubjects().then((data) => {
+    void fetchCurrentProfile().then((profile) => {
       if (!alive) return
-      setSubjects(data)
-      setIsLoading(false)
+      const sid = profile?.schoolId ?? null
+      setSchoolId(sid)
+      void fetchSubjects(sid).then((data) => {
+        if (!alive) return
+        setSubjects(data)
+        setIsLoading(false)
+      })
     })
     return () => {
       alive = false
@@ -78,9 +87,13 @@ export default function SubjectsPage() {
 
   const addSubject = useCallback(
     async (quick: boolean) => {
+      if (!schoolId) return
       setAdding(true)
       const name = quick ? `Subject ${subjects.length + 1}` : "New Subject"
-      const { error } = await supabase.from("subjects").insert({ name }).select("id")
+      const { error } = await supabase
+        .from("subjects")
+        .insert({ name, school_id: schoolId })
+        .select("id")
 
       if (error) {
         notify.error(error.message)
@@ -92,7 +105,7 @@ export default function SubjectsPage() {
       await loadSubjects()
       setAdding(false)
     },
-    [subjects.length, loadSubjects]
+    [subjects.length, loadSubjects, schoolId]
   )
 
   const deleteSubject = useCallback(

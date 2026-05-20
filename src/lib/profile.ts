@@ -105,3 +105,39 @@ export async function currentUserIsStaff(): Promise<boolean> {
   const profile = await fetchCurrentProfile()
   return profile?.role === "owner" || profile?.role === "admin"
 }
+
+/** Creates a new school and assigns the current user as its owner. */
+export async function createSchoolAndUpdateProfile(
+  name: string,
+  slug: string
+): Promise<{ schoolId: string | null; error: string | null }> {
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return { schoolId: null, error: "Not authenticated" }
+
+  const { data: school, error: schoolError } = await supabase
+    .from("schools")
+    .insert({ name: name.trim(), slug: slug.trim() })
+    .select("id")
+    .single()
+
+  if (schoolError) {
+    if (schoolError.code === "23505")
+      return { schoolId: null, error: "That URL slug is already taken — try another" }
+    return { schoolId: null, error: schoolError.message }
+  }
+
+  const { error: profileError } = await supabase
+    .from("profiles")
+    .update({
+      school_id: school.id,
+      role: "owner",
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", user.id)
+
+  if (profileError) return { schoolId: null, error: profileError.message }
+
+  return { schoolId: school.id, error: null }
+}

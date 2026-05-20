@@ -40,6 +40,7 @@ export async function middleware(request: NextRequest) {
   // Routes that never require authentication.
   const isAuthRoute = pathname.startsWith("/auth")
   const isApiRoute = pathname.startsWith("/api")
+  const isOnboarding = pathname === "/onboarding"
   const isPublicRoute = isAuthRoute || isApiRoute
 
   // Unauthenticated user hitting a protected page → login.
@@ -50,14 +51,35 @@ export async function middleware(request: NextRequest) {
   }
 
   // Authenticated user hitting login/signup → dashboard.
-  if (
-    user &&
-    isAuthRoute &&
-    !pathname.startsWith("/auth/callback")
-  ) {
+  if (user && isAuthRoute && !pathname.startsWith("/auth/callback")) {
     const dashboardUrl = request.nextUrl.clone()
     dashboardUrl.pathname = "/dashboard"
     return NextResponse.redirect(dashboardUrl)
+  }
+
+  // Authenticated user: check whether they have a school assigned.
+  if (user && !isPublicRoute) {
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("school_id")
+      .eq("id", user.id)
+      .maybeSingle()
+
+    const hasSchool = Boolean(profile?.school_id)
+
+    // No school yet → force to onboarding (unless already there).
+    if (!hasSchool && !isOnboarding) {
+      const onboardingUrl = request.nextUrl.clone()
+      onboardingUrl.pathname = "/onboarding"
+      return NextResponse.redirect(onboardingUrl)
+    }
+
+    // School already set → skip onboarding.
+    if (hasSchool && isOnboarding) {
+      const dashboardUrl = request.nextUrl.clone()
+      dashboardUrl.pathname = "/dashboard"
+      return NextResponse.redirect(dashboardUrl)
+    }
   }
 
   return response

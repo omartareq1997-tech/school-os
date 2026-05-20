@@ -115,10 +115,13 @@ function mapTimetableRow(row: TimetableRow): TimetableEntry {
   }
 }
 
-export async function fetchSubjects(): Promise<Subject[]> {
+export async function fetchSubjects(schoolId: string | null): Promise<Subject[]> {
+  if (!schoolId) return []
+
   const { data, error } = await supabase
     .from("subjects")
     .select("id, name")
+    .eq("school_id", schoolId)
     .order("name")
 
   if (error) {
@@ -132,7 +135,9 @@ export async function fetchSubjects(): Promise<Subject[]> {
   }))
 }
 
-export async function fetchTeachers(): Promise<Teacher[]> {
+export async function fetchTeachers(schoolId: string | null): Promise<Teacher[]> {
+  if (!schoolId) return []
+
   const { data, error } = await supabase
     .from("teachers")
     .select(
@@ -150,6 +155,7 @@ export async function fetchTeachers(): Promise<Teacher[]> {
       )
     `
     )
+    .eq("school_id", schoolId)
     .order("name")
 
   if (error) {
@@ -160,10 +166,13 @@ export async function fetchTeachers(): Promise<Teacher[]> {
   return (data as TeacherRow[]).map(mapTeacherRow)
 }
 
-export async function fetchClasses(): Promise<SchoolClass[]> {
+export async function fetchClasses(schoolId: string | null): Promise<SchoolClass[]> {
+  if (!schoolId) return []
+
   const { data, error } = await supabase
     .from("classes")
     .select("id, name, grade, students_count")
+    .eq("school_id", schoolId)
     .order("name")
 
   if (error) {
@@ -179,7 +188,9 @@ export async function fetchClasses(): Promise<SchoolClass[]> {
   }))
 }
 
-export async function fetchTimetableEntries(): Promise<TimetableEntry[]> {
+export async function fetchTimetableEntries(schoolId: string | null): Promise<TimetableEntry[]> {
+  if (!schoolId) return []
+
   const { data, error } = await supabase
     .from("timetable_entries")
     .select(
@@ -196,6 +207,7 @@ export async function fetchTimetableEntries(): Promise<TimetableEntry[]> {
       subjects ( id, name )
     `
     )
+    .eq("school_id", schoolId)
     .order("day")
     .order("start_time")
 
@@ -247,8 +259,9 @@ export type TeacherPayload = {
   preferences: string
 }
 
-export function teacherToDb(payload: TeacherPayload) {
+export function teacherToDb(payload: TeacherPayload, schoolId: string) {
   return {
+    school_id: schoolId,
     name: payload.name,
     min_working_days: payload.minWorkingDays,
     max_working_days: payload.maxWorkingDays,
@@ -267,8 +280,9 @@ export type TimetablePayload = {
   endTime: string
 }
 
-export function timetableToDb(payload: TimetablePayload) {
+export function timetableToDb(payload: TimetablePayload, schoolId: string) {
   return {
+    school_id: schoolId,
     class_id: payload.classId,
     teacher_id: payload.teacherId,
     subject_id: payload.subjectId,
@@ -290,7 +304,7 @@ export type DashboardStats = {
 export type RecentActivityItem = {
   id: string
   name: string
-  createdAt: string
+  createdAt: string | null
 }
 
 export type RecentTimetableItem = {
@@ -298,7 +312,7 @@ export type RecentTimetableItem = {
   subjectName: string
   className: string
   day: string
-  createdAt: string
+  createdAt: string | null
 }
 
 export type RecentActivity = {
@@ -310,20 +324,22 @@ export type RecentActivity = {
 type RecentEntryRow = {
   id: string
   day: string
-  created_at: string
+  created_at: string | null
   subjects: { name: string } | { name: string }[] | null
   classes: { name: string } | { name: string }[] | null
 }
 
-export async function fetchDashboardStats(): Promise<{
+export async function fetchDashboardStats(schoolId: string | null): Promise<{
   data: DashboardStats | null
   error: string | null
 }> {
+  if (!schoolId) return { data: null, error: "No school assigned" }
+
   const [teachers, classes, subjects, entries] = await Promise.all([
-    supabase.from("teachers").select("*", { count: "exact", head: true }),
-    supabase.from("classes").select("*", { count: "exact", head: true }),
-    supabase.from("subjects").select("*", { count: "exact", head: true }),
-    supabase.from("timetable_entries").select("*", { count: "exact", head: true }),
+    supabase.from("teachers").select("*", { count: "exact", head: true }).eq("school_id", schoolId),
+    supabase.from("classes").select("*", { count: "exact", head: true }).eq("school_id", schoolId),
+    supabase.from("subjects").select("*", { count: "exact", head: true }).eq("school_id", schoolId),
+    supabase.from("timetable_entries").select("*", { count: "exact", head: true }).eq("school_id", schoolId),
   ])
 
   const firstError =
@@ -347,29 +363,54 @@ export async function fetchDashboardStats(): Promise<{
   }
 }
 
-export async function fetchRecentActivity(): Promise<{
+async function queryRecentRow(
+  table: "teachers" | "classes" | "timetable_entries",
+  selectCols: string,
+  schoolId: string
+) {
+  // Try ordering by created_at first. If the column doesn't exist (pre-migration),
+  // fall back to ordering by id so the query still returns a row.
+  const withTimestamp = await supabase
+    .from(table)
+    .select(selectCols)
+    .eq("school_id", schoolId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (!withTimestamp.error) return withTimestamp
+
+  // PostgREST returns code "42703" (undefined_column) when the column is missing.
+  // Fall back to id ordering and omit created_at from the select.
+  const fallbackCols = selectCols
+    .split(",")
+    .map((c) => c.trim())
+    .filter((c) => !c.startsWith("created_at"))
+    .join(", ")
+
+  return supabase
+    .from(table)
+    .select(fallbackCols)
+    .eq("school_id", schoolId)
+    .order("id", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+}
+
+export async function fetchRecentActivity(schoolId: string | null): Promise<{
   data: RecentActivity | null
   error: string | null
 }> {
+  if (!schoolId) return { data: null, error: "No school assigned" }
+
   const [teacherRes, classRes, entryRes] = await Promise.all([
-    supabase
-      .from("teachers")
-      .select("id, name, created_at")
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-    supabase
-      .from("classes")
-      .select("id, name, created_at")
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-    supabase
-      .from("timetable_entries")
-      .select("id, day, created_at, subjects(name), classes(name)")
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
+    queryRecentRow("teachers", "id, name, created_at", schoolId),
+    queryRecentRow("classes", "id, name, created_at", schoolId),
+    queryRecentRow(
+      "timetable_entries",
+      "id, day, created_at, subjects(name), classes(name)",
+      schoolId
+    ),
   ])
 
   const firstError =
@@ -384,22 +425,22 @@ export async function fetchRecentActivity(): Promise<{
   const teacher = teacherRes.data as {
     id: string
     name: string
-    created_at: string
+    created_at?: string | null
   } | null
   const schoolClass = classRes.data as {
     id: string
     name: string
-    created_at: string
+    created_at?: string | null
   } | null
   const entry = entryRes.data as RecentEntryRow | null
 
   return {
     data: {
       latestTeacher: teacher
-        ? { id: teacher.id, name: teacher.name, createdAt: teacher.created_at }
+        ? { id: teacher.id, name: teacher.name, createdAt: teacher.created_at ?? null }
         : null,
       latestClass: schoolClass
-        ? { id: schoolClass.id, name: schoolClass.name, createdAt: schoolClass.created_at }
+        ? { id: schoolClass.id, name: schoolClass.name, createdAt: schoolClass.created_at ?? null }
         : null,
       latestEntry: entry
         ? {
@@ -407,7 +448,7 @@ export async function fetchRecentActivity(): Promise<{
             subjectName: unwrapRelation(entry.subjects)?.name ?? "—",
             className: unwrapRelation(entry.classes)?.name ?? "—",
             day: entry.day,
-            createdAt: entry.created_at,
+            createdAt: entry.created_at ?? null,
           }
         : null,
     },

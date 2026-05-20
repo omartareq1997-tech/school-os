@@ -18,6 +18,7 @@ import {
   type DashboardStats,
   type RecentActivity,
 } from "@/lib/database"
+import { fetchCurrentProfile } from "@/lib/profile"
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -154,19 +155,23 @@ export default function DashboardPage() {
   useEffect(() => {
     let alive = true
 
-    void Promise.all([fetchDashboardStats(), fetchRecentActivity()]).then(
-      ([statsRes, activityRes]) => {
-        if (!alive) return
-        setLoading(false)
-        if (statsRes.error) setStatsError(statsRes.error)
-        else setStats(statsRes.data)
-        if (activityRes.error) setActivityError(activityRes.error)
-        else setActivity(activityRes.data)
-        if (!statsRes.error && !activityRes.error && refreshKey > 0) {
-          notify.success("Dashboard refreshed")
+    void fetchCurrentProfile().then((profile) => {
+      if (!alive) return
+      const sid = profile?.schoolId ?? null
+      void Promise.all([fetchDashboardStats(sid), fetchRecentActivity(sid)]).then(
+        ([statsRes, activityRes]) => {
+          if (!alive) return
+          setLoading(false)
+          if (statsRes.error) setStatsError(statsRes.error)
+          else setStats(statsRes.data)
+          if (activityRes.error) setActivityError(activityRes.error)
+          else setActivity(activityRes.data)
+          if (!statsRes.error && !activityRes.error && refreshKey > 0) {
+            notify.success("Dashboard refreshed")
+          }
         }
-      }
-    )
+      )
+    })
 
     return () => {
       alive = false

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { supabase } from "@/lib/supabase"
 import { fetchClasses } from "@/lib/database"
+import { fetchCurrentProfile } from "@/lib/profile"
 import { AppShell } from "@/components/app-shell"
 import { notify } from "@/lib/toast"
 import { Spinner, SkeletonTableRows } from "@/components/skeletons"
@@ -53,6 +54,7 @@ function buildUpdatePayload(schoolClass: SchoolClass) {
 const CURRENT_STEP = 1
 
 export default function ClassesPage() {
+  const [schoolId, setSchoolId] = useState<string | null>(null)
   const [classes, setClasses] = useState<SchoolClass[]>([])
   const [search, setSearch] = useState("")
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -65,26 +67,23 @@ export default function ClassesPage() {
 
   // Post-mutation reload — called from event handlers, never from effects.
   const loadClasses = useCallback(async () => {
-    const { data, error } = await supabase
-      .from("classes")
-      .select("*")
-      .order("name")
+    if (!schoolId) return
+    setClasses(await fetchClasses(schoolId))
+  }, [schoolId])
 
-    if (error) {
-      notify.error(error.message)
-      return
-    }
-
-    setClasses((data ?? []).map((row) => mapRowToClass(row)))
-  }, [])
-
-  // Initial load via .then() to avoid synchronous setState in effect body.
+  // Initial load: fetch profile first to get schoolId, then fetch data.
+  // All setState lives inside .then() callbacks (react-hooks/set-state-in-effect).
   useEffect(() => {
     let alive = true
-    void fetchClasses().then((data) => {
+    void fetchCurrentProfile().then((profile) => {
       if (!alive) return
-      setClasses(data)
-      setIsLoading(false)
+      const sid = profile?.schoolId ?? null
+      setSchoolId(sid)
+      void fetchClasses(sid).then((data) => {
+        if (!alive) return
+        setClasses(data)
+        setIsLoading(false)
+      })
     })
     return () => {
       alive = false
@@ -132,11 +131,12 @@ export default function ClassesPage() {
 
   const addClass = useCallback(
     async (quick: boolean) => {
+      if (!schoolId) return
       setAdding(true)
       const count = classes.length
       let result = await supabase
         .from("classes")
-        .insert(buildInsertPayload(quick, count))
+        .insert({ ...buildInsertPayload(quick, count), school_id: schoolId })
         .select("*")
 
       if (
@@ -146,7 +146,7 @@ export default function ClassesPage() {
       ) {
         result = await supabase
           .from("classes")
-          .insert(buildMinimalInsertPayload(quick, count))
+          .insert({ ...buildMinimalInsertPayload(quick, count), school_id: schoolId })
           .select("*")
       }
 
@@ -168,7 +168,7 @@ export default function ClassesPage() {
       await loadClasses()
       setAdding(false)
     },
-    [classes.length, loadClasses]
+    [classes.length, loadClasses, schoolId]
   )
 
   const deleteClass = useCallback(

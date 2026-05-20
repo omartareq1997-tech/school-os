@@ -10,6 +10,7 @@ import {
   type Subject,
   type Teacher,
 } from "@/lib/database"
+import { fetchCurrentProfile } from "@/lib/profile"
 import { SubjectPicker, SubjectTags } from "@/components/subject-tags"
 import { AppShell } from "@/components/app-shell"
 import { notify } from "@/lib/toast"
@@ -54,6 +55,7 @@ function defaultDraft(quick: boolean, count: number): TeacherDraft {
 }
 
 export default function TeachersPage() {
+  const [schoolId, setSchoolId] = useState<string | null>(null)
   const [teachers, setTeachers] = useState<Teacher[]>([])
   const [allSubjects, setAllSubjects] = useState<Subject[]>([])
   const [search, setSearch] = useState("")
@@ -67,21 +69,27 @@ export default function TeachersPage() {
 
   // Post-mutation reload — called from event handlers, never from effects.
   const loadTeachers = useCallback(async () => {
-    setTeachers(await fetchTeachers())
-  }, [])
+    if (!schoolId) return
+    setTeachers(await fetchTeachers(schoolId))
+  }, [schoolId])
 
-  // Initial load: all setState lives inside the async .then() to satisfy the
-  // react-hooks/set-state-in-effect lint rule.
+  // Initial load: fetch profile first to get schoolId, then fetch data.
+  // All setState lives inside .then() callbacks (react-hooks/set-state-in-effect).
   useEffect(() => {
     let alive = true
-    void Promise.all([fetchTeachers(), fetchSubjects()]).then(
-      ([teachersData, subjectsData]) => {
-        if (!alive) return
-        setTeachers(teachersData)
-        setAllSubjects(subjectsData)
-        setIsLoading(false)
-      }
-    )
+    void fetchCurrentProfile().then((profile) => {
+      if (!alive) return
+      const sid = profile?.schoolId ?? null
+      setSchoolId(sid)
+      void Promise.all([fetchTeachers(sid), fetchSubjects(sid)]).then(
+        ([teachersData, subjectsData]) => {
+          if (!alive) return
+          setTeachers(teachersData)
+          setAllSubjects(subjectsData)
+          setIsLoading(false)
+        }
+      )
+    })
     return () => {
       alive = false
     }
@@ -128,11 +136,12 @@ export default function TeachersPage() {
 
   const addTeacher = useCallback(
     async (quick: boolean) => {
+      if (!schoolId) return
       setAdding(true)
       const draft = defaultDraft(quick, teachers.length)
       const { data, error } = await supabase
         .from("teachers")
-        .insert(teacherToDb(draft))
+        .insert(teacherToDb(draft, schoolId))
         .select("id")
         .single()
 
@@ -156,7 +165,7 @@ export default function TeachersPage() {
       await loadTeachers()
       setAdding(false)
     },
-    [teachers.length, loadTeachers]
+    [teachers.length, loadTeachers, schoolId]
   )
 
   const deleteTeacher = useCallback(
@@ -207,12 +216,12 @@ export default function TeachersPage() {
   )
 
   const saveEdit = useCallback(async () => {
-    if (!editingId || !editDraft) return
+    if (!editingId || !editDraft || !schoolId) return
     setSaving(true)
 
     const { error } = await supabase
       .from("teachers")
-      .update(teacherToDb(editDraft))
+      .update(teacherToDb(editDraft, schoolId))
       .eq("id", editingId)
 
     if (error) {
@@ -231,7 +240,7 @@ export default function TeachersPage() {
     setEditingId(null)
     setEditDraft(null)
     await loadTeachers()
-  }, [editingId, editDraft, loadTeachers])
+  }, [editingId, editDraft, loadTeachers, schoolId])
 
   const busy = isLoading || adding
 

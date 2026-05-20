@@ -14,6 +14,7 @@ import {
   type Teacher,
   type TimetableEntry,
 } from "@/lib/database"
+import { fetchCurrentProfile } from "@/lib/profile"
 import { AppShell } from "@/components/app-shell"
 import { notify } from "@/lib/toast"
 import { Spinner, SkeletonTableRows } from "@/components/skeletons"
@@ -74,6 +75,7 @@ function emptyForm(
 }
 
 export default function TimetablePage() {
+  const [schoolId, setSchoolId] = useState<string | null>(null)
   const [entries, setEntries] = useState<TimetableEntry[]>([])
   const [classes, setClasses] = useState<SchoolClass[]>([])
   const [teachers, setTeachers] = useState<Teacher[]>([])
@@ -96,34 +98,41 @@ export default function TimetablePage() {
 
   // Post-mutation reload — called from event handlers, never from effects.
   const loadAll = useCallback(async () => {
+    if (!schoolId) return
     const [entriesData, classesData, teachersData, subjectsData] =
       await Promise.all([
-        fetchTimetableEntries(),
-        fetchClasses(),
-        fetchTeachers(),
-        fetchSubjects(),
+        fetchTimetableEntries(schoolId),
+        fetchClasses(schoolId),
+        fetchTeachers(schoolId),
+        fetchSubjects(schoolId),
       ])
     setEntries(entriesData)
     setClasses(classesData)
     setTeachers(teachersData)
     setSubjects(subjectsData)
-  }, [])
+  }, [schoolId])
 
-  // Initial load via .then() to avoid synchronous setState in effect body.
+  // Initial load: fetch profile first to get schoolId, then fetch data.
+  // All setState lives inside .then() callbacks (react-hooks/set-state-in-effect).
   useEffect(() => {
     let alive = true
-    void Promise.all([
-      fetchTimetableEntries(),
-      fetchClasses(),
-      fetchTeachers(),
-      fetchSubjects(),
-    ]).then(([entriesData, classesData, teachersData, subjectsData]) => {
+    void fetchCurrentProfile().then((profile) => {
       if (!alive) return
-      setEntries(entriesData)
-      setClasses(classesData)
-      setTeachers(teachersData)
-      setSubjects(subjectsData)
-      setIsLoading(false)
+      const sid = profile?.schoolId ?? null
+      setSchoolId(sid)
+      void Promise.all([
+        fetchTimetableEntries(sid),
+        fetchClasses(sid),
+        fetchTeachers(sid),
+        fetchSubjects(sid),
+      ]).then(([entriesData, classesData, teachersData, subjectsData]) => {
+        if (!alive) return
+        setEntries(entriesData)
+        setClasses(classesData)
+        setTeachers(teachersData)
+        setSubjects(subjectsData)
+        setIsLoading(false)
+      })
     })
     return () => {
       alive = false
@@ -202,8 +211,9 @@ export default function TimetablePage() {
       return
     }
 
+    if (!schoolId) return
     setSaving(true)
-    const payload = timetableToDb(form)
+    const payload = timetableToDb(form, schoolId)
 
     const result = editingId
       ? await supabase
@@ -228,7 +238,7 @@ export default function TimetablePage() {
     notify.success(editingId ? "Entry updated" : "Entry added")
     closeModal()
     await loadAll()
-  }, [form, editingId, closeModal, loadAll])
+  }, [form, editingId, closeModal, loadAll, schoolId])
 
   const deleteEntry = useCallback(
     async (id: string) => {
